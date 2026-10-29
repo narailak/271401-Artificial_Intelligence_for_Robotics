@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "controller": "KGGN-1",
+  "mission": {
+    "arena": {
+      "width": 2.7,
+      "height": 2.6500000000000004,
+      "origin_x": -1.221,
+      "origin_y": -1.43,
+      "yaw": 0.0
+    },
+    "start": {
+      "x": 0.55,
+      "y": 0.55,
+      "yaw": 0.7695331204968199
+    },
+    "goal": [
+      2.1989,
+      1.9312
+    ]
+  },
+  "policy": {
+    "goal_weight": 2.4,
+    "clearance_weight": 1.5,
+    "turn_weight": 0.4,
+    "revisit_weight": 1.7,
+    "preferred_side": 1,
+    "wall_distance": 0.26,
+    "slowdown_distance": 0.35,
+    "hysteresis": 0.025,
+    "side_hold": 2.0,
+    "progress_window": 12,
+    "min_progress": 0.025,
+    "lookahead": 0.6
+  },
+  "hardware": {
+    "radius": 0.113,
+    "safety_margin": 0.04,
+    "max_speed": 0.08,
+    "max_angular_speed": 0.8,
+    "acceleration": 0.25,
+    "braking": 0.4,
+    "angular_acceleration": 2.0,
+    "scan_timeout": 0.6,
+    "odom_timeout": 0.4,
+    "command_timeout": 0.35,
+    "control_period": 0.05,
+    "goal_tolerance": 0.1,
+    "scan_beams": 120,
+    "scan_range": 3.5,
+    "lidar_min": 0.16,
+    "lidar_x": 0.02
+  },
+  "initial_reference": {
+    "mode": "simulation",
+    "robot_id": "tb3",
+    "odom_frame": "odom",
+    "base_frame": "base_footprint",
+    "odom_pose": null,
+    "stamp": 0.0,
+    "captured_at": 0.0,
+    "odom_source": ""
+  },
+  "training_summary": {
+    "cases": 2,
+    "successes": 2,
+    "collisions": 0,
+    "evaluated_candidates": 8,
+    "training_seconds": 25.314,
+    "selected_index": 3,
+    "train_seed": 1701,
+    "evaluation_seed": 9101,
+    "evaluation_cases": 2,
+    "evaluation_successes": 2,
+    "evaluation_collisions": 0,
+    "baseline_cases": 2,
+    "baseline_successes": 2,
+    "baseline_collisions": 0,
+    "mean_time": 28.475,
+    "mean_distance": 2.2132
+  },
+  "fingerprint": "2311afaad3d63a2b0b9e243cf2b581c88efcb8bb138e23fd25bd8c5dcb9aa38f"
+}

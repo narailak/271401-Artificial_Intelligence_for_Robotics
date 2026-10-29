@@ -1,0 +1,88 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 20; 30; 40
+    Fixed Frame: knowledge_field
+    Frame Rate: 20
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.25
+      Plane Cell Count: 24
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Arena Start Goal Robot Status
+      Enabled: true
+      Topic:
+        Value: /knowledge/markers
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 10
+    - Class: rviz_default_plugins/LaserScan
+      Name: Live LiDAR
+      Enabled: true
+      Topic:
+        Value: /scan
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 5
+      Size (m): 0.02
+      Style: Points
+      Decay Time: 0.2
+    - Class: rviz_default_plugins/Path
+      Name: Selected Local Path
+      Enabled: true
+      Topic:
+        Value: /knowledge/local_path
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 10
+      Color: 30; 220; 220
+      Line Style: Lines
+      Line Width: 0.03
+    - Class: rviz_default_plugins/Path
+      Name: Estimated Executed Trail
+      Enabled: true
+      Topic:
+        Value: /knowledge/trail
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 10
+      Color: 240; 70; 150
+      Line Style: Lines
+      Line Width: 0.025
+    - Class: rviz_default_plugins/Pose
+      Name: Estimated Robot Pose
+      Enabled: true
+      Topic:
+        Value: /knowledge/pose
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        Depth: 10
+      Shape: Arrow
+      Shaft Length: 0.15
+      Head Length: 0.06
+      Shaft Radius: 0.02
+      Head Radius: 0.04
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Top view
+      Scale: 160
+      Angle: 0
+      X: 1.25
+      Y: 1.25
+Window Geometry:
+  Width: 1100
+  Height: 800
