@@ -18,7 +18,7 @@ import threading
 import time
 
 from .model import InitialReference, Pose, wrap
-from .navigation import MIN_SCAN_COVERAGE_PERCENT
+from .navigation import MIN_SCAN_COVERAGE_PERCENT,MOVING_SCAN_COVERAGE_PERCENT
 
 
 def stamp_seconds(stamp):
@@ -252,7 +252,7 @@ def aligned_scan_observation(scan, scans, poses, field_pose, speed, mount, now, 
         scan_coverage_percent=scan_coverage(scan)['scan_coverage_percent'],interpolated_beams=len(bridged))
 
 
-def runtime_status_text(reason,drive):
+def runtime_status_text(reason,drive,scan_required=MIN_SCAN_COVERAGE_PERCENT):
     messages={
         'full_map_localization_active':'หยุด: AMCL/SLAM ยังเปิดอยู่ ปิด Localization จาก Program 1 แล้วหยุดและเริ่ม Program 2 ใหม่',
         'waiting_odometry':'กำลังรอข้อมูล odometry จากหุ่น',
@@ -277,7 +277,7 @@ def runtime_status_text(reason,drive):
         'advancing_for_scan':'ขยับหน้าช้า ๆ เพื่อเก็บ LiDAR เพิ่ม เฉพาะทางที่ตรวจแล้ว ไม่เกิน 5 cm / 0.02 m/s',
         'waiting_scan_after_advance':'หยุดเก็บ LiDAR หลังขยับตรวจครบระยะหรือเวลา รอข้อมูลยืนยันก่อนเดินต่อ',
         'waiting_scan_clearance':'หยุดรอ: LiDAR หรือระยะเบรกยังไม่ยืนยันว่าขยับหน้าต่อได้',
-        'insufficient_scan_coverage':f'หยุดรอ: สแกนที่ใช้ตรวจทางอ่านได้ไม่ถึง {MIN_SCAN_COVERAGE_PERCENT:.0f}%',
+        'insufficient_scan_coverage':f'หยุดรอ: สแกนที่ใช้ตรวจทางอ่านได้ไม่ถึง {scan_required:.0f}%',
         'incomplete_scan':'รอสแกนรอบถัดไป: รอบนี้ข้อมูลมุมยังไม่ครบ',
         'malformed_scan':'หยุด: ข้อมูล LiDAR ผิดรูปแบบ ตรวจสถานะเซนเซอร์แล้วเริ่มใหม่',
         'control_loop_overrun':'หยุด: คอมคำนวณไม่ทันช่วงเวลาที่อนุญาต หยุดและเริ่มการทดลองใหม่',
@@ -919,6 +919,9 @@ def _make_navigation_node(knowledge, *, drive, scan_topic, odom_topic, command_t
             self.started = time.monotonic()
             self.last_tick = self.started
             self.driving_started = False
+            self.has_started_moving = False
+            from .diagnostics import StationaryReporter
+            self.stationary_reporter = StationaryReporter()
             self.guard_reason = "waiting_guard" if drive else "dry_run"
             self._guard_ready = False
             self._guard_seen = 0.
@@ -1076,6 +1079,10 @@ def _make_navigation_node(knowledge, *, drive, scan_topic, odom_topic, command_t
 
         def tick(self):
             monotonic, now = time.monotonic(), self.ros_now()
+            if drive and self.driving_started and (abs(state.speed)>=.008 or abs(state.turn)>=.025):
+                self.has_started_moving=True
+            required=MOVING_SCAN_COVERAGE_PERCENT if self.has_started_moving else MIN_SCAN_COVERAGE_PERCENT
+            self.navigator.min_scan_coverage_percent=required
             elapsed = monotonic-self.last_tick
             self.last_tick = monotonic
             v = w = 0.
@@ -1160,8 +1167,8 @@ def _make_navigation_node(knowledge, *, drive, scan_topic, odom_topic, command_t
                           estimated_goal_error=math.hypot(state.pose.x-knowledge.goal[0], state.pose.y-knowledge.goal[1]),
                           recoveries=self.navigator.recoveries, fingerprint=knowledge.fingerprint,
                           scan_message_age=now-stamp_seconds(self.latest_scan.header.stamp) if self.latest_scan is not None else None,
-                          scan_required_coverage_percent=MIN_SCAN_COVERAGE_PERCENT,
-                          scan_coverage_passed=None if quality['scan_coverage_percent'] is None else quality['scan_coverage_percent']>=MIN_SCAN_COVERAGE_PERCENT,
+                          scan_required_coverage_percent=required,
+                          scan_coverage_passed=None if quality['scan_coverage_percent'] is None else quality['scan_coverage_percent']>=required,
                           anchored=state.anchored,
                           odom_receive_age=monotonic-state.odom_seen if state.odom_seen else None,
                           scan_span=len(self.latest_scan.ranges)*abs(self.latest_scan.angle_increment) if self.latest_scan is not None else None,
@@ -1174,7 +1181,7 @@ def _make_navigation_node(knowledge, *, drive, scan_topic, odom_topic, command_t
                           observation_error=self.observation_error,
                           observation_error_age=now-self.observation_checked_at if self.observation_checked_at is not None else None,
                           **quality)
-            condition_key=(self.reason,self.guard_reason,bool(state.stopped),int(monotonic))
+            condition_key=(self.reason,self.guard_reason,bool(state.stopped),required,int(monotonic))
             if condition_key!=self._condition_key:
                 from .diagnostics import movement_conditions,format_movement_conditions
                 self.movement_conditions=movement_conditions(status,self.navigator,self.display_observation,now)
@@ -1193,14 +1200,14 @@ def _make_navigation_node(knowledge, *, drive, scan_topic, odom_topic, command_t
                 points=obs.points if obs is not None else ()
                 stride=max(1,math.ceil(len(points)/500))
                 data=dict(status,elapsed=monotonic-self.started,distance=self.traveled_distance,
-                    explanation=runtime_status_text(self.reason,drive),
+                    explanation=runtime_status_text(self.reason,drive,required),
                     path=self.navigator.local_path,points=points[::stride],
                     sensor_pose=asdict(obs.pose) if obs is not None else asdict(state.pose),
                     unknown=[asdict(sector) for sector in (obs.unknown_sectors or ())] if obs is not None else [])
                 print('TB3_DATA: '+json.dumps(data,allow_nan=False),flush=True)
-            report_key=(self.reason,self.guard_reason,None if ui_stream else int(monotonic))
+            report_key=(self.reason,self.guard_reason,required,None if ui_stream else int(monotonic))
             if report_key!=self.last_reported_reason:
-                description=runtime_status_text(self.reason,drive)
+                description=runtime_status_text(self.reason,drive,required)
                 if self.sensor_fault_info is not None and self.reason in ('stale_or_future_scan','stale_or_future_odometry'):
                     age=self.sensor_fault_info['age']
                     description+=f' (timestamp เร็วกว่าคอม {-age:.3f} s)' if age<0 else f' (ข้อมูลล่าช้า {age:.3f} s)'
@@ -1215,9 +1222,19 @@ def _make_navigation_node(knowledge, *, drive, scan_topic, odom_topic, command_t
                 if coverage is not None:
                     description+=f" · สแกนล่าสุดอ่านได้ {status['scan_valid_beams']}/{status['scan_total_beams']} ({coverage:.1f}%)"
                     description+=f" · ขาด {status['scan_missing_percent']:.1f}% · อายุ {status['scan_message_age']:.3f} s"
-                    description+=f" · เกณฑ์ {MIN_SCAN_COVERAGE_PERCENT:.0f}%: "+('ผ่าน' if status['scan_coverage_passed'] else 'ไม่ผ่าน')
+                    description+=f" · เกณฑ์ {required:.0f}%: "+('ผ่าน' if status['scan_coverage_passed'] else 'ไม่ผ่าน')
                 print('TB3_STATUS: '+description,flush=True)
                 self.last_reported_reason=report_key
+            active=drive and self.has_started_moving and self.reason not in ('arrived_estimate','operator_stop','shutdown')
+            moving=status['odom_age'] is not None and status['odom_age']<=knowledge.hardware.odom_timeout and (abs(state.speed)>=.008 or abs(state.turn)>=.025)
+            duration=self.stationary_reporter.update(active,moving,monotonic,(self.reason,self.guard_reason))
+            if duration is not None:
+                from .diagnostics import format_movement_conditions
+                description=runtime_status_text(self.reason,drive,required)
+                if v!=0. or w!=0.:description+=' · มีคำสั่งเคลื่อนที่ แต่ odometry ไม่ยืนยันว่าหุ่นขยับ'
+                print(f'TB3_STATUS: หยุดค้าง {duration:.1f} s · {description}',flush=True)
+                details=format_movement_conditions(self.movement_conditions,failed_only=True)
+                print('TB3_STOP: '+(details or 'ไม่พบเงื่อนไขที่ไม่ผ่าน ตรวจการรับคำสั่งมอเตอร์และการขยับของล้อ'),flush=True)
             if self.log is not None:
                 self.log.write(json.dumps(dict(time=now, **status), allow_nan=False)+"\n")
                 self.log.flush()

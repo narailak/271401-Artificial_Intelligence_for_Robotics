@@ -22,10 +22,12 @@ def main():
     callback_errors=[]
     root.report_callback_exception=lambda exc,value,tb:callback_errors.append((exc.__name__,str(value)))
     try:
+        assert app.hardware.radius==.124 and app.hardware.safety_margin==.03
+        assert math.isclose(app.hardware.safe_radius,.154)
         widget=app.hardware_button
         while widget is not None and widget is not app.setup_tab:widget=widget.master
         assert widget is app.setup_tab,'Hardware/clearance must be configured on the mission page'
-        assert tuple(app.candidate_box['values'])==tuple(str(i) for i in range(1,9))
+        assert not hasattr(app,'candidate_box') and not hasattr(app,'candidates')
         source=Path.home()/'tb3_maps/arena.yaml'
         inputs=[source,source.with_suffix('.pgm')]
         if not all(p.exists() for p in inputs):
@@ -39,6 +41,13 @@ def main():
         app.detect_button.invoke();root.update()
         assert app.boundary_detection is not None
         start,goal=app.validate_mission()
+        with patch.object(type(app.world),'reachable',return_value=False):
+            app.validate_mission()
+            assert app.route_verified is False
+            app.mission_button.invoke();root.update()
+            assert app.mission_state=='pending' and 'คำเตือน' in app.action_feedback.get()
+            assert str(app.train_button['state'])=='normal'
+        app.mission_button.invoke();root.update()
         assert math.dist((start.x,start.y),goal)>=.5, 'Suggested Goal must differ from Start'
         # Live Start comes only from ROS; there is no rough-position UI.
         app.simulation_mode.set(False);app.mode_changed();app.click_mode.set('start')
@@ -108,11 +117,18 @@ def main():
         assert app.mission_state=='pending','Hardware changes invalidate earlier mission checks'
         app.mission_button.invoke();root.update()
         assert app.mission_state=='valid'
-        app.candidates.set('2');app.build_knowledge()
-        deadline=time.monotonic()+100
+        app.build_knowledge()
+        deadline=time.monotonic()+300
         while app.busy and time.monotonic()<deadline:
             root.update();time.sleep(.01)
         assert not app.busy and app.policy is not None, app.status.get()
+        assert app.report['evaluated_candidates']==8
+        assert app.report['rl']['method']=='REINFORCE'
+        assert len(app.report['rl']['episodes'])==12
+        assert any(e['before']!=e['after'] for e in app.report['rl']['episodes'])
+        base_policy=app.report['rl']['base_policy']
+        for key,value in base_policy.items():
+            if key not in app.report['rl']['weight_keys']:assert getattr(app.policy,key)==value
         assert app.trained_context is not None
         for used,button in ((False,app.baseline_button),(True,app.knowledge_button)):
             button.invoke()
@@ -140,6 +156,7 @@ def main():
             reloaded=Knowledge.load(output)
             assert exported.fingerprint==reloaded.fingerprint
             assert reloaded.reference.mode=='simulation'
+            assert 'rl' not in reloaded.training_summary
             assert 'obstacles' not in json.dumps(reloaded.document())
             assert 'rclpy' not in sys.modules
             assert app.frozen

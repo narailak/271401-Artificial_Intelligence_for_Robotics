@@ -6,6 +6,9 @@ import signal
 import subprocess
 import tempfile
 import yaml
+from .scan_matching import (MIN_MATCH_AGREEMENT,MAX_MATCH_ERROR,
+    MIN_MATCH_ENDPOINT_SCORE,MIN_MATCH_SEPARATION)
+from .model import Hardware
 
 STABILITY_WINDOW=4.0
 
@@ -28,10 +31,10 @@ def localization_diagnostics(snapshot):
     support=snapshot.get('particle_support')
     check('กลุ่มสมมติฐาน',None if support is None else support>=.95,'รอ AMCL' if support is None else f'{support:.1%} / ต้อง ≥95%')
     agreement=snapshot.get('scan_agreement')
-    if agreement is not None:check('ลำแสงตรงแมพ',agreement>=.90,f'{agreement:.1%} / ต้อง ≥90%')
+    if agreement is not None:check('ลำแสงตรงแมพ',agreement>=MIN_MATCH_AGREEMENT,f'{agreement:.1%} / ต้อง ≥{MIN_MATCH_AGREEMENT:.0%}')
     quality=snapshot.get('scan_quality') or {}
-    for key,label,limit,minimum in (('separation','แยกคำตอบอื่น',.04,True),
-            ('trimmed_error','ระยะคลาดเฉลี่ยหลังตัด outlier',.07,False),('endpoint_score','คะแนนปลายลำแสง',.65,True)):
+    for key,label,limit,minimum in (('separation','แยกคำตอบอื่น',MIN_MATCH_SEPARATION,True),
+            ('trimmed_error','ระยะคลาดเฉลี่ยหลังตัด outlier',MAX_MATCH_ERROR,False),('endpoint_score','คะแนนปลายลำแสง',MIN_MATCH_ENDPOINT_SCORE,True)):
         value=quality.get(key)
         if value is not None:check(label,value>=limit if minimum else value<=limit,
             f'{value:.3f} / ต้อง {"≥" if minimum else "≤"}{limit:.3f}')
@@ -77,8 +80,9 @@ def stable_localization(history, stamp):
 def amcl_parameters(params):
     """Setup-only settings for a small LDS-02 arena and global initialization."""
     amcl=params['amcl']['ros__parameters']
+    hardware=Hardware()
     amcl.update(base_frame_id='base_footprint',odom_frame_id='odom',global_frame_id='map',scan_topic='/scan',
-        update_min_d=.02,update_min_a=.03,laser_min_range=.16,laser_max_range=8.,transform_tolerance=.2,
+        update_min_d=.02,update_min_a=.03,laser_min_range=hardware.lidar_min,laser_max_range=hardware.scan_range,transform_tolerance=.2,
         min_particles=2000,max_particles=8000,max_beams=120,sigma_hit=.06,z_hit=.95,z_rand=.05,
         set_initial_pose=False,always_reset_initial_pose=True,resample_interval=1)
     return params

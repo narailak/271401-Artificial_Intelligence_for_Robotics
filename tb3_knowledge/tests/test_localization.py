@@ -17,6 +17,13 @@ import create_knowledge
 
 
 class LocalizationTests(unittest.TestCase):
+    def test_report_uses_relaxed_scan_match_limits(self):
+        report=localization_diagnostics(dict(scan_agreement=.758,
+            scan_quality=dict(separation=.047,trimmed_error=.099,endpoint_score=.791)))
+        for label in ('ลำแสงตรงแมพ','แยกคำตอบอื่น','ระยะคลาดเฉลี่ยหลังตัด outlier','คะแนนปลายลำแสง'):
+            self.assertIn('[ผ่าน] '+label,report)
+        self.assertIn('≥70%',report)
+        self.assertIn('≤0.150',report)
     def test_close_viewer_preserves_amcl_and_setup_files(self):
         process,viewer,temporary=Mock(),Mock(),Mock()
         viewer.poll.return_value=None;viewer.pid=123
@@ -47,6 +54,8 @@ class LocalizationTests(unittest.TestCase):
         self.assertFalse(amcl['set_initial_pose'])
         self.assertTrue(amcl['always_reset_initial_pose'])
         self.assertGreater(amcl['max_particles'],amcl['min_particles'])
+        self.assertEqual(amcl['laser_min_range'],.16)
+        self.assertEqual(amcl['laser_max_range'],3.5)
         self.assertEqual(params['other'],{'unchanged':True})
 
     def test_separate_position_and_heading_modes_are_ambiguous(self):

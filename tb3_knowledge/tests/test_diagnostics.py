@@ -5,12 +5,36 @@ import unittest
 from dataclasses import replace
 
 from tb3_knowledge.core.clearance import UnknownSector
-from tb3_knowledge.core.diagnostics import movement_conditions,format_movement_conditions
+from tb3_knowledge.core.diagnostics import movement_conditions,format_movement_conditions,StationaryReporter
 from tb3_knowledge.core.model import Arena,Hardware,Policy,Pose
 from tb3_knowledge.core.navigation import Navigator,Observation
 
 
 class MovementConditionsTests(unittest.TestCase):
+    def test_stationary_report_waits_repeats_and_resets_on_motion(self):
+        reporter=StationaryReporter()
+        self.assertIsNone(reporter.update(False,False,0.,'waiting_scan'))
+        self.assertIsNone(reporter.update(True,False,10.,'insufficient_scan_coverage'))
+        self.assertIsNone(reporter.update(True,False,12.9,'insufficient_scan_coverage'))
+        self.assertEqual(reporter.update(True,False,13.,'insufficient_scan_coverage'),3.)
+        self.assertIsNone(reporter.update(True,False,14.,'insufficient_scan_coverage'))
+        self.assertEqual(reporter.update(True,False,14.,'odometry_timeout'),4.)
+        self.assertEqual(reporter.update(True,False,19.,'odometry_timeout'),9.)
+        self.assertIsNone(reporter.update(True,True,20.,'navigating'))
+        self.assertIsNone(reporter.update(True,False,21.,'navigating'))
+        self.assertEqual(reporter.update(True,False,24.,'navigating'),3.)
+        self.assertIsNone(reporter.update(False,False,25.,'arrived_estimate'))
+
+    def test_coverage_details_follow_the_active_threshold(self):
+        nav,obs,status=self.scene()
+        nav.min_scan_coverage_percent=80.
+        obs=replace(obs,scan_coverage_percent=85.)
+        status['scan_coverage_percent']=85.
+        checks={c['code']:c for c in movement_conditions(status,nav,obs,10.)}
+        for code in ('raw_coverage','navigation_coverage'):
+            self.assertTrue(checks[code]['passed'])
+            self.assertIn('≥80%',checks[code]['detail'])
+
     def scene(self):
         nav=Navigator(Arena(2,2),(1.7,1.),Policy(),Hardware())
         points=tuple((.27*math.cos(i*math.pi/30),.27*math.sin(i*math.pi/30)) for i in range(60))

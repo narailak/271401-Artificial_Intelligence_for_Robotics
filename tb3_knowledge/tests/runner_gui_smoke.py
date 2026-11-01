@@ -73,13 +73,11 @@ def run():
             app.live_view.update_data(dict(packet,scan_coverage_percent=86.,scan_missing_percent=14.,
                 scan_total_beams=100,scan_valid_beams=86,scan_missing_beams=14,movement_conditions=blockers))
             assert app.live_view.coverage_gate.get()=='เกณฑ์สแกน ≥ 90%: ไม่ผ่าน'
-            lines=app.live_view.blocker_text.get('1.0','end-1c').splitlines()
-            assert len(lines)==2
-            assert lines[0].startswith('1.') and '86.0%' in lines[0] and '≥90%' in lines[0]
-            assert lines[1].startswith('2.') and '0.600' in lines[1] and '0.500' in lines[1]
-            assert str(app.live_view.blocker_text.cget('wrap'))=='none'
+            app.live_view.update_data(dict(packet,scan_coverage_percent=86.,scan_required_coverage_percent=80.))
+            assert app.live_view.coverage_gate.get()=='เกณฑ์สแกน ≥ 80%: ผ่าน'
+            assert not hasattr(app.live_view,'blocker_text')
+            assert app.live_view.progress_canvas.winfo_ismapped()
             app.live_view.update_data(packet)
-            assert '86.0%' not in app.live_view.blocker_text.get('1.0','end')
             for tag in ('arena','robot','lidar','planned_path','trail'):
                 assert app.live_view.canvas.find_withtag(tag),tag
             assert 'TB3_DATA:' not in app.console.get('1.0','end')
@@ -93,6 +91,29 @@ def run():
             assert app.live_view.data is previous
             app.live_view.update_data(dict(packet,scan_coverage_percent=101.))
             assert app.live_view.data is previous
+            app.live_view.update_data(dict(packet,scan_required_coverage_percent=None))
+            assert app.live_view.data is previous
+            # Progress uses current remaining distance, not distance travelled.
+            half=dict(packet,anchored=True,pose=dict(x=1.2,y=1.2,yaw=.7),odom_age=.05)
+            app.live_view.update_data(half)
+            assert abs(app.live_view.progress_percent-50)<1e-6
+            app.live_view.update_data(dict(half,pose=dict(x=4.,y=4.,yaw=0.)))
+            assert app.live_view.progress_percent==0
+            at_goal=dict(half,pose=dict(x=2.,y=2.,yaw=0.),reason='arrived_estimate')
+            app.live_view.update_data(at_goal)
+            assert app.live_view.progress_percent==99 and not app.live_view.finished,'Dry run must not celebrate real arrival'
+            app.live_view.update_data(dict(at_goal,drive=True,reason='scan_timeout',stop_latched=True))
+            assert not app.live_view.finished,'Fault must not trigger Finish'
+            app.live_view.update_data(dict(at_goal,drive=True,stop_latched=True))
+            assert app.live_view.progress_percent==100 and app.live_view.finished
+            assert app.live_view.canvas.find_withtag('finish')
+            assert not app.live_view.fault_notice.get()
+            animation=app.live_view._finish_after
+            app.live_view.update_data(dict(at_goal,drive=True))
+            assert app.live_view._finish_after==animation,'Repeated arrival must not restart animation'
+            app.live_view.reset()
+            assert app.live_view.progress_percent==0 and not app.live_view.finished
+            assert app.live_view._finish_after is None and not app.live_view.canvas.find_withtag('finish')
             child=Mock();child.poll.return_value=None;child.stdout=io.StringIO('')
             with patch('run_knowledge.subprocess.Popen',return_value=child) as launch:
                 app.start('dry')
@@ -100,7 +121,7 @@ def run():
             assert '--ui-stream' in arguments
             assert '--rviz' not in arguments and '--drive' not in arguments
             assert app.live_view.data is None
-            assert '0.128' not in app.live_view.blocker_text.get('1.0','end')
+            assert app.live_view.progress_percent==0
             app.process=None;app.sync()
             with patch('tkinter.filedialog.askopenfilename',return_value=''):
                 app.choose_file()

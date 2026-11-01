@@ -2,11 +2,32 @@
 import math
 
 from .clearance import UnknownSector,sector_distance
-from .navigation import Navigator,MIN_SCAN_COVERAGE_PERCENT
+from .navigation import Navigator
+
+
+class StationaryReporter:
+    """Report after three stationary seconds, then on reason change or every five seconds."""
+    def __init__(self):
+        self.since=None
+        self.last_report=None
+        self.reason=None
+
+    def update(self,active,moving,now,reason):
+        if not active or moving:
+            self.since=self.last_report=self.reason=None
+            return None
+        if self.since is None:self.since=now
+        duration=now-self.since
+        if duration<3:return None
+        if self.last_report is not None and now-self.last_report<5 and reason==self.reason:return None
+        self.last_report=now
+        self.reason=reason
+        return duration
 
 
 def movement_conditions(status,navigator,observation,now):
     h=navigator.hardware
+    required=navigator.min_scan_coverage_percent
     checks=[]
     def check(code,label,passed,detail,scope='ระบบ'):
         checks.append(dict(code=code,label=label,passed=passed,detail=detail,scope=scope))
@@ -32,8 +53,8 @@ def movement_conditions(status,navigator,observation,now):
     check('observation','TF/odometry ครอบคลุมสแกนและสร้าง observation ได้',None if not recent_check else observation_error=='',
         'ยังไม่มีผลตรวจล่าสุด' if not recent_check else observation_error or 'สร้าง observation ได้')
     coverage=status.get('scan_coverage_percent')
-    check('raw_coverage','ความครบสแกนล่าสุด',None if coverage is None else coverage>=MIN_SCAN_COVERAGE_PERCENT,
-        'ยังไม่มีข้อมูล' if coverage is None else f'{coverage:.1f}%; ต้อง ≥{MIN_SCAN_COVERAGE_PERCENT:.0f}%')
+    check('raw_coverage','ความครบสแกนล่าสุด',None if coverage is None else coverage>=required,
+        'ยังไม่มีข้อมูล' if coverage is None else f'{coverage:.1f}%; ต้อง ≥{required:.0f}%')
     span=status.get('scan_span')
     check('scan_span','ช่วงมุมสแกนครบรอบ',None if span is None else 2*math.pi-.15<=span<=2*math.pi+.15,
         'ยังไม่มีข้อมูล' if span is None else f'{math.degrees(span):.1f}°; ต้อง {math.degrees(2*math.pi-.15):.1f}–{math.degrees(2*math.pi+.15):.1f}°')
@@ -82,9 +103,9 @@ def movement_conditions(status,navigator,observation,now):
     used_coverage=obs.scan_coverage_percent
     if used_coverage is None:
         used_coverage=100*sum(math.isfinite(value) and 0<value<=h.scan_range+.05 for value in obs.ranges)/max(1,len(obs.ranges))
-    check('navigation_coverage','ความครบสแกนที่ใช้ตรวจทาง',used_coverage>=MIN_SCAN_COVERAGE_PERCENT,
-        f'{used_coverage:.1f}%; ต้อง ≥{MIN_SCAN_COVERAGE_PERCENT:.0f}%')
-    if used_coverage>=MIN_SCAN_COVERAGE_PERCENT:
+    check('navigation_coverage','ความครบสแกนที่ใช้ตรวจทาง',used_coverage>=required,
+        f'{used_coverage:.1f}%; ต้อง ≥{required:.0f}%')
+    if used_coverage>=required:
         sectors=[]
     check('arena','วงปลอดภัยอยู่ในกรอบสนาม',probe._inside(obs.pose.x,obs.pose.y),
         f'x={obs.pose.x:.3f}, y={obs.pose.y:.3f} m; รัศมีรวม {probe.radius:.3f} m')

@@ -92,7 +92,7 @@ class Policy:
 class Hardware:
     # Burger's rear body corner is hypot(0.032 + 0.140/2, 0.140/2) from base_footprint.
     radius: float = 0.124
-    safety_margin: float = 0.015
+    safety_margin: float = 0.03
     max_speed: float = 0.05
     max_angular_speed: float = 0.5
     acceleration: float = 0.25

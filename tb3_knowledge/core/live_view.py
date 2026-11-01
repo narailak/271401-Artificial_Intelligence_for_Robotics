@@ -1,9 +1,9 @@
 """Program 2 live view: knowledge boundary plus current sensors, without RViz."""
 import math
+import time
 import tkinter as tk
 from tkinter import ttk
 from .navigation import MIN_SCAN_COVERAGE_PERCENT
-from .diagnostics import format_movement_conditions
 
 
 class LiveView(ttk.Frame):
@@ -13,19 +13,14 @@ class LiveView(ttk.Frame):
         self.fault_notice=tk.StringVar(value='')
         ttk.Label(self,textvariable=self.fault_notice,foreground='#a12327',wraplength=850,
             font=('Noto Sans Thai',-16)).pack(fill='x')
-        self.blocker_heading=tk.StringVar(value='เงื่อนไขที่ยังติด — รอข้อมูล')
-        ttk.Label(self,textvariable=self.blocker_heading,font=('Noto Sans Thai',-16,'bold')).pack(fill='x')
-        blockers=ttk.Frame(self);blockers.pack(fill='x',pady=(0,4))
-        blockers.columnconfigure(0,weight=1)
-        self.blocker_text=tk.Text(blockers,height=5,wrap='none',state='disabled',
-            font=('Noto Sans Thai',-16),background='#fff8ee',foreground='#a12327')
-        self.blocker_text.grid(row=0,column=0,sticky='ew')
-        vertical=ttk.Scrollbar(blockers,orient='vertical',command=self.blocker_text.yview)
-        vertical.grid(row=0,column=1,sticky='ns')
-        horizontal=ttk.Scrollbar(blockers,orient='horizontal',command=self.blocker_text.xview)
-        horizontal.grid(row=1,column=0,sticky='ew')
-        self.blocker_text.configure(yscrollcommand=vertical.set,xscrollcommand=horizontal.set)
-        self.last_blocker_text=''
+        self.progress_percent=0.
+        self.finished=False
+        self.finish_started=None
+        self._finish_after=None
+        self.progress_canvas=tk.Canvas(self,height=112,bg='#102737',highlightthickness=0)
+        self.progress_canvas.pack(fill='x',pady=(0,6))
+        self.progress_canvas.bind('<Configure>',lambda event:self.draw_progress())
+        self.bind('<Destroy>',self.cancel_animation,add='+')
         self.canvas=tk.Canvas(self,bg='#142230',highlightthickness=0,height=160)
         self.canvas.pack(fill='both',expand=True)
         self.canvas.bind('<Configure>',lambda event:self.draw())
@@ -55,21 +50,79 @@ class LiveView(ttk.Frame):
         self.knowledge=knowledge;self.reset()
 
     def reset(self):
+        self.cancel_animation()
         self.data=None;self.trail=[]
+        self.progress_percent=0.;self.finished=False;self.finish_started=None
         self.fault_notice.set('')
-        self.blocker_heading.set('เงื่อนไขที่ยังติด — รอข้อมูล')
-        self.set_blockers('ยังไม่มีผลตรวจ กดตรวจเซนเซอร์หรือเริ่มรอบเพื่อรับข้อมูล')
         self.coverage_gate.set(f'เกณฑ์สแกน ≥ {MIN_SCAN_COVERAGE_PERCENT:.0f}%: รอข้อมูล')
         for value in self.values.values():value.set('—')
         self.diagnostics.set('ยังไม่รับเซนเซอร์ · การเลือกไฟล์ยังไม่เริ่ม ROS หรือมอเตอร์')
+        self.draw_progress()
         self.draw()
 
-    def set_blockers(self,text):
-        if text==self.last_blocker_text:return
-        position=self.blocker_text.yview()[0]
-        self.blocker_text.configure(state='normal');self.blocker_text.delete('1.0','end')
-        self.blocker_text.insert('1.0',text);self.blocker_text.configure(state='disabled')
-        self.blocker_text.yview_moveto(position);self.last_blocker_text=text
+    def cancel_animation(self,event=None):
+        if event is not None and event.widget is not self:return
+        if self._finish_after is not None:
+            self.after_cancel(self._finish_after)
+            self._finish_after=None
+
+    def update_progress(self,data):
+        if data.get('drive') is True and data.get('reason')=='arrived_estimate':
+            if not self.finished:
+                self.finished=True
+                self.finish_started=time.monotonic()
+                self.animate_finish()
+            self.progress_percent=100.
+        elif not self.finished and data.get('anchored',data.get('odom_age') is not None):
+            k=self.knowledge
+            initial=math.dist((k.start.x,k.start.y),k.goal)
+            pose=data['pose']
+            remaining=math.dist((pose['x'],pose['y']),k.goal)
+            self.progress_percent=min(99.,max(0.,100*(1-remaining/initial))) if initial>0 else 0.
+        self.draw_progress()
+
+    def draw_progress(self):
+        c=self.progress_canvas;c.delete('all')
+        width=max(240,c.winfo_width());left,right=28,width-28
+        color='#5ff0b1' if self.finished else '#40d9ef'
+        c.create_text(left,24,anchor='w',text='Finish · ถึง Goal แล้ว' if self.finished else 'Start → Goal',
+            fill=color,font=('Noto Sans Thai',-21,'bold'))
+        c.create_text(right,24,anchor='e',text=f'{self.progress_percent:.0f}%',fill=color,
+            font=('DejaVu Sans',-27,'bold'),tags='progress_percent')
+        c.create_line(left,61,right,61,fill='#294959',width=12,capstyle='round')
+        tip=left+(right-left)*self.progress_percent/100
+        if tip>left:c.create_line(left,61,tip,61,fill=color,width=12,capstyle='round')
+        c.create_oval(tip-7,54,tip+7,68,fill='#ecfffa',outline=color,width=2)
+        c.create_text(left,86,anchor='w',text='Start · 0%',fill='#b9cad8',font=('DejaVu Sans',-12))
+        c.create_text(right,86,anchor='e',text='Goal · 100%',fill='#b9cad8',font=('DejaVu Sans',-12))
+        c.create_text(width/2,104,text='คำนวณจากระยะห่าง Goal · อาจลดลงเมื่อเดินอ้อม',
+            fill='#90aebe',font=('Noto Sans Thai',-12))
+
+    def animate_finish(self):
+        self._finish_after=None
+        self.draw_finish()
+        if self.finished and time.monotonic()-self.finish_started<4:
+            self._finish_after=self.after(33,self.animate_finish)
+
+    def draw_finish(self):
+        c=self.canvas;c.delete('finish')
+        if not self.finished:return
+        elapsed=time.monotonic()-self.finish_started
+        width,height=c.winfo_width(),c.winfo_height()
+        x,y=width/2,height/2
+        pulse=3*math.sin(min(elapsed,4)*5) if elapsed<4 else 0
+        half=min(210,width/2-20)
+        c.create_rectangle(x-half-5,y-80-pulse,x+half+5,y+80+pulse,
+            fill='#1a6359',outline='',tags='finish')
+        c.create_rectangle(x-half,y-75,x+half,y+75,fill='#102f35',outline='#5ff0b1',width=2,tags='finish')
+        c.create_text(x,y-18,text='Finish',fill='#72f6ba',font=('DejaVu Sans',-48,'bold'),tags='finish')
+        c.create_text(x,y+37,text='ถึง Goal แล้ว · 100%',fill='#e3fff4',font=('Noto Sans Thai',-22),tags='finish')
+        if elapsed<4:
+            colors=('#5ff0b1','#40d9ef','#ffcf66','#f68bbc')
+            for i in range(42):
+                px=(i*.61803398875%1)*width
+                py=((elapsed*(70+i%5*17)+i*43)%(height+60))-30
+                c.create_rectangle(px,py,px+4+i%4,py+8,fill=colors[i%4],outline='',tags='finish')
 
     def update_data(self,data):
         if not isinstance(data,dict) or self.knowledge is None or data.get('fingerprint')!=self.knowledge.fingerprint:return
@@ -83,9 +136,11 @@ class LiveView(ttk.Frame):
             if any(data.get(key) is not None and not math.isfinite(data[key])
                     for key in ('elapsed','distance','estimated_goal_error','scan_age','odom_age','scan_message_age','conditions_age',
                         'scan_coverage_percent','scan_missing_percent','scan_total_beams','scan_valid_beams',
-                        'scan_missing_beams','unknown_scan_sectors')):return
+                        'scan_missing_beams','unknown_scan_sectors','scan_required_coverage_percent')):return
             if any(data.get(key) is not None and not 0<=data[key]<=100
                     for key in ('scan_coverage_percent','scan_missing_percent')):return
+            required=data.get('scan_required_coverage_percent',MIN_SCAN_COVERAGE_PERCENT)
+            if not isinstance(required,(int,float)) or not math.isfinite(required) or not 0<required<=100:return
             checks=data.get('movement_conditions',[])
             if not isinstance(checks,list) or any(not isinstance(item,dict) or not {'code','label','passed','detail','scope'}<=item.keys()
                     or item['passed'] is not True and item['passed'] is not False and item['passed'] is not None for item in checks):return
@@ -93,8 +148,9 @@ class LiveView(ttk.Frame):
             if len(velocity)!=2 or not all(math.isfinite(v) for v in velocity):return
         except (KeyError,TypeError,ValueError):return
         self.data=data
+        self.update_progress(data)
         notice=''
-        if data.get('stop_latched'):
+        if data.get('stop_latched') and data.get('reason')!='arrived_estimate':
             notice=data.get('explanation',data.get('reason','หยุด'))+' · กดหยุดก่อนเริ่มรอบใหม่'
             fault=data.get('sensor_fault')
             if isinstance(fault,dict):
@@ -112,8 +168,9 @@ class LiveView(ttk.Frame):
         for key,source in (('coverage','scan_coverage_percent'),('missing','scan_missing_percent')):
             value=data.get(source);self.values[key].set('—' if value is None else f'{value:.1f}')
         coverage=data.get('scan_coverage_percent')
-        gate='รอข้อมูล' if coverage is None else 'ผ่าน' if coverage>=MIN_SCAN_COVERAGE_PERCENT else 'ไม่ผ่าน'
-        self.coverage_gate.set(f'เกณฑ์สแกน ≥ {MIN_SCAN_COVERAGE_PERCENT:.0f}%: {gate}')
+        required=data.get('scan_required_coverage_percent',MIN_SCAN_COVERAGE_PERCENT)
+        gate='รอข้อมูล' if coverage is None else 'ผ่าน' if coverage>=required else 'ไม่ผ่าน'
+        self.coverage_gate.set(f'เกณฑ์สแกน ≥ {required:.0f}%: {gate}')
         total=data.get('scan_total_beams');valid=data.get('scan_valid_beams')
         self.values['counts'].set('—' if not total or valid is None else f'{valid:.0f} / {total:.0f}')
         unknown=data.get('unknown_scan_sectors')
@@ -124,9 +181,6 @@ class LiveView(ttk.Frame):
         checks=data.get('movement_conditions',[])
         failed=sum(isinstance(item,dict) and item.get('passed') is False for item in checks)
         unknown_checks=sum(isinstance(item,dict) and item.get('passed') is None for item in checks)
-        self.blocker_heading.set(f"เงื่อนไขที่ยังติด: {failed} ข้อ · รอข้อมูล {unknown_checks} ข้อ · ผลตรวจเมื่อ {data.get('conditions_age',0.):.1f} s ก่อน")
-        self.set_blockers(format_movement_conditions(checks,failed_only=True) if failed or unknown_checks
-            else 'ผ่านเงื่อนไขที่ตรวจได้ทั้งหมด' if checks else 'ยังไม่มีรายการผลตรวจ')
         self.diagnostics.set(f"{'เดินจริง' if data.get('drive') else 'ตรวจเซนเซอร์ ไม่สั่งมอเตอร์'} · {data.get('mode','')} / {data.get('reason','')}\n"
             f"v={velocity[0]:.3f} m/s · ω={velocity[1]:.3f} rad/s · guard: {data.get('guard','—')}\n"
             f"สแกนล่าสุด: {freshness} · ขาด {missing if missing is not None else '—'} จุด · "
@@ -181,3 +235,4 @@ class LiveView(ttk.Frame):
         canvas.create_line(x,y,*xy(pose['x']+.18*cy,pose['y']+.18*sy),fill='#61e49a',width=3,arrow='last',tags='heading')
         if not data or data.get('odom_age') is None:
             canvas.create_text(canvas.winfo_width()/2,25,text='ยังไม่ยืนยันตำแหน่งสด · แสดง Start ที่บันทึก',fill='#b9cad8',font=('Noto Sans Thai',-15))
+        self.draw_finish()

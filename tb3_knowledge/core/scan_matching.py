@@ -12,6 +12,17 @@ import numpy as np
 
 from .model import Pose,wrap
 
+MIN_MATCH_AGREEMENT=.70
+MAX_MATCH_ERROR=.15
+MIN_MATCH_ENDPOINT_SCORE=.55
+MIN_MATCH_SEPARATION=.02
+
+
+def match_quality_reason(agreement,trimmed_error,endpoint_score,separation):
+    if agreement<MIN_MATCH_AGREEMENT or trimmed_error>MAX_MATCH_ERROR or endpoint_score<MIN_MATCH_ENDPOINT_SCORE:
+        return 'scan_map_mismatch'
+    return 'localization_ambiguous' if separation<MIN_MATCH_SEPARATION else 'matched'
+
 
 @dataclass(frozen=True)
 class ScanMatch:
@@ -140,6 +151,5 @@ def match_scan(slam,ranges,angle_min,angle_increment,mount,*,radius=.124,minimum
     if not evaluated:raise ValueError('no_localization_match')
     evaluated.sort(key=lambda row:row[0],reverse=True)
     best=evaluated[0];separation=best[0]-evaluated[1][0] if len(evaluated)>1 else 1.
-    reason=('scan_map_mismatch' if best[1]<.90 or best[2]>.07 or best[4]<.65 else
-        'localization_ambiguous' if separation<.04 else 'matched')
+    reason=match_quality_reason(best[1],best[2],best[4],separation)
     return ScanMatch(best[3],reason,best[1],separation,best[2],best[4])

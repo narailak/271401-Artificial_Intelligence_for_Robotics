@@ -26,7 +26,7 @@ def _integrate(pose: Pose, velocity: float, angular: float, dt: float) -> Pose:
 
 def run_episode(world, arena: Arena, start: Pose, goal: tuple[float, float], policy: Policy,
                 hardware: Hardware, seed: int = 0, max_time: float = 120,
-                noise: bool = True) -> dict:
+                noise: bool = True, *, navigator=None, on_step=None) -> dict:
     """Run dynamics, scan/command delay and bounded reproducible disturbances.
 
     Simulated sensing is 6.7 Hz with 50 ms delivery delay; commands have 50 ms
@@ -42,7 +42,7 @@ def run_episode(world, arena: Arena, start: Pose, goal: tuple[float, float], pol
         raise ValueError("Goal footprint is blocked")
     rng = random.Random(seed)
     dt = hardware.control_period
-    navigator = Navigator(arena, goal, policy, hardware)
+    navigator = navigator if navigator is not None else Navigator(arena, goal, policy, hardware)
     truth = estimate = start
     velocity = angular = 0.0
     applied = (0.0, 0.0)
@@ -105,9 +105,11 @@ def run_episode(world, arena: Arena, start: Pose, goal: tuple[float, float], pol
         velocity = _approach(velocity, applied[0], acceleration * dt)
         angular = _approach(angular, applied[1], hardware.angular_acceleration * dt)
         new_truth = _integrate(truth, velocity, angular, dt)
+        previous_truth=truth
         if not arena.contains(new_truth.x, new_truth.y, hardware.radius) or not world.free(new_truth.x, new_truth.y, hardware.radius):
             collisions = 1
             status = "collision"
+            if on_step is not None:on_step(previous_truth,new_truth,status,dt)
             break
         distance += math.hypot(new_truth.x - truth.x, new_truth.y - truth.y)
         truth = new_truth
@@ -118,9 +120,11 @@ def run_episode(world, arena: Arena, start: Pose, goal: tuple[float, float], pol
         if navigator.reason == "arrived_estimate" and abs(velocity) < 0.001 and abs(angular) < 0.005:
             physical_error = math.hypot(goal[0] - truth.x, goal[1] - truth.y)
             status = "success" if physical_error <= hardware.goal_tolerance else "estimated_arrival_error"
-            break
         if navigator.reason in ("recovery_exhausted", "outside_safe_arena"):
             status = navigator.reason
+        terminal=status!='timeout' or step==int(math.ceil(max_time/dt))
+        if on_step is not None:on_step(previous_truth,truth,status if terminal else None,dt)
+        if terminal:
             break
     if trace[-1] != (truth.x, truth.y, truth.yaw):
         trace.append((truth.x, truth.y, truth.yaw))

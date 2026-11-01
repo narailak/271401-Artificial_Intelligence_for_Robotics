@@ -34,6 +34,9 @@ class App:
         self.captured_start = None
         self.busy = self.frozen = False
         self.monitor = self.localization = None
+        self.slam_session = None
+        self.slam_worker = None
+        self.slam_status = tk.StringVar(value='ยังไม่ได้เริ่ม SLAM · เปิด bringup บนหุ่นก่อน')
         self.pending_rectangle = []
         self.trace = []
         self.preview_result = None
@@ -45,6 +48,7 @@ class App:
         self.arena_fields_dirty = False
         self.writing_arena = False
         self.mission_state = 'pending'
+        self.route_verified = None
         self.status = tk.StringVar(value='เลือกแผนที่ กำหนดสนามและภารกิจ แล้วสร้าง knowledge')
         self.map_info = tk.StringVar(value='ยังไม่ได้โหลดแผนที่')
         self.summary = tk.StringVar(value='ยังไม่ได้สร้าง knowledge')
@@ -58,7 +62,6 @@ class App:
         self.click_mode = tk.StringVar(value='goal')
         self.arena_vars = {k: tk.StringVar(value=v) for k,v in {'origin_x':'0','origin_y':'0','yaw':'0','width':'2.5','height':'2.5'}.items()}
         self.pose_vars = {k: tk.StringVar(value=v) for k,v in {'x':'0.4','y':'0.4','yaw':'0','gx':'2','gy':'2'}.items()}
-        self.candidates = tk.StringVar(value='4')
         self.mission_feedback=tk.StringVar(value='ยังไม่ได้ตรวจ Start–Goal')
         self.simulation_summary=tk.StringVar(value='ยังไม่มีผลซิม เลือกปุ่มจำลองที่ต้องการ')
         self.simulation_method=tk.StringVar(value='ยังไม่ได้จำลอง')
@@ -96,7 +99,9 @@ class App:
         split.add(left,weight=0); split.add(right,weight=1)
         tabs=ttk.Notebook(left); tabs.pack(fill='both',expand=True,padx=(0,10))
         self.setup_tab=ttk.Frame(tabs,padding=10); self.train_tab=ttk.Frame(tabs,padding=10)
+        self.slam_tab=ttk.Frame(tabs,padding=10)
         tabs.add(self.setup_tab,text='1. แผนที่ / ภารกิจ'); tabs.add(self.train_tab,text='2. ฝึก / ส่งออก')
+        tabs.add(self.slam_tab,text='SLAM map')
         self.tabs=tabs
         def scrollable(page):
             canvas=tk.Canvas(page,highlightthickness=0,width=380)
@@ -118,9 +123,23 @@ class App:
                 root.bind_all(sequence,wheel,add='+')
             return inner
         s=scrollable(self.setup_tab)
+        ttk.Label(s,text='ขั้นที่ 1 · เลือกแผนที่').pack(anchor='w',pady=4)
         self.map_button=self.action_button(s,text='เลือก arena.yaml (+ PGM)',command=self.browse_map)
         self.map_button.pack(fill='x',ipady=5)
         ttk.Label(s,textvariable=self.map_info,wraplength=380).pack(anchor='w',pady=6)
+        ttk.Separator(s).pack(fill='x',pady=6)
+        ttk.Label(s,text='ขั้นที่ 2 · Localize และรับ Start').pack(anchor='w',pady=4)
+        ttk.Checkbutton(s,text='โหมดจำลอง — ยังไม่มีหุ่น',variable=self.simulation_mode,command=self.mode_changed).pack(anchor='w',pady=3)
+        row=ttk.Frame(s); row.pack(fill='x')
+        ttk.Label(row,text='ชื่อหุ่น (Robot ID)').pack(side='left')
+        ttk.Entry(row,textvariable=self.robot_id,width=17,font=('DejaVu Sans',-14)).pack(side='left',padx=6)
+        ttk.Label(s,text='ชื่ออ้างอิงใน knowledge เช่น tb3 ใช้ให้ตรงกันใน Program 2\nไม่ใช่ IP หรือ ROS namespace · มีหุ่นตัวเดียวใช้ tb3 ได้',wraplength=370).pack(anchor='w',pady=4)
+        self.action_button(s,text='เปิด Localization / หาตำแหน่งอัตโนมัติ',command=self.start_localization).pack(fill='x',pady=3)
+        ttk.Label(s,text='ค้นหาทั่วแมพ หรือใช้ 2D Pose Estimate ใน RViz\nเทียบ LiDAR โดยหุ่นอยู่นิ่ง รอพร้อม=True แล้วกดรับ Start',wraplength=370).pack(anchor='w',pady=4)
+        self.action_button(s,text='เชื่อม ROS / รับตำแหน่ง Start',command=self.capture_start).pack(fill='x',pady=3)
+        ttk.Label(s,textvariable=self.localization_status,wraplength=380).pack(anchor='w',pady=4)
+        ttk.Separator(s).pack(fill='x',pady=6)
+        ttk.Label(s,text='ขั้นที่ 3 · ตั้งค่ากรอบสนาม / หุ่น / Start–Goal').pack(anchor='w',pady=4)
         self.detect_button=self.action_button(s,text='ตรวจขอบสนามอัตโนมัติ',command=self.detect_boundary)
         self.detect_button.pack(fill='x',pady=4)
         ttk.Label(s,text='หาแนวผนังสี่ด้านจากแมพ แล้วใช้กรอบที่พบให้ทันที\nโหลดแมพจะตรวจให้แล้ว กดปุ่มนี้เมื่อต้องการตรวจใหม่',wraplength=370).pack(anchor='w',pady=(0,6))
@@ -157,25 +176,9 @@ class App:
         self.mission_button.pack(fill='x',pady=4)
         self.mission_feedback_label=ttk.Label(s,textvariable=self.mission_feedback,style='Missionpending.TLabel',wraplength=370)
         self.mission_feedback_label.pack(fill='x',pady=(0,8))
-        ttk.Checkbutton(s,text='โหมดจำลอง — ยังไม่มีหุ่น',variable=self.simulation_mode,command=self.mode_changed).pack(anchor='w',pady=3)
-        row=ttk.Frame(s); row.pack(fill='x')
-        ttk.Label(row,text='ชื่อหุ่น (Robot ID)').pack(side='left')
-        ttk.Entry(row,textvariable=self.robot_id,width=17,font=('DejaVu Sans',-14)).pack(side='left',padx=6)
-        ttk.Label(s,text='ชื่ออ้างอิงใน knowledge เช่น tb3 ใช้ให้ตรงกันใน Program 2\nไม่ใช่ IP หรือ ROS namespace · มีหุ่นตัวเดียวใช้ tb3 ได้',wraplength=370).pack(anchor='w',pady=4)
-        self.action_button(s,text='เปิด Localization / หาตำแหน่งอัตโนมัติ',command=self.start_localization).pack(fill='x',pady=3)
-        self.action_button(s,text='ค้นหาตำแหน่งใหม่ทั่วแมพ',command=self.retry_localization).pack(fill='x',pady=3)
-        ttk.Label(s,text='ค้นหาทั่วแมพ หรือใช้ 2D Pose Estimate ใน RViz\nเทียบ LiDAR โดยหุ่นอยู่นิ่ง รอพร้อม=True แล้วกดรับ Start',wraplength=370).pack(anchor='w',pady=4)
-        self.action_button(s,text='เชื่อม ROS / รับตำแหน่ง Start',command=self.capture_start).pack(fill='x',pady=3)
-        self.action_button(s,text='หยุด Localization ก่อนเปิด Program 2',command=self.stop_localization).pack(fill='x',pady=3)
-        ttk.Label(s,textvariable=self.localization_status,wraplength=380).pack(anchor='w',pady=4)
         t=scrollable(self.train_tab)
-        row=ttk.Frame(t);row.pack(fill='x',pady=4)
-        ttk.Label(row,text='จำนวนชุดค่าที่จะลอง').pack(side='left')
-        self.candidate_box=ttk.Combobox(row,textvariable=self.candidates,values=tuple(str(i) for i in range(1,len(policy_candidates())+1)),state='readonly',width=5,font=('DejaVu Sans',-14))
-        self.candidate_box.pack(side='right')
-        ttk.Label(t,text=f'มีตัวเลือกเตรียมไว้ {len(policy_candidates())} ชุด แต่ละชุดกำหนดพฤติกรรมการเดินต่างกัน\nเลือก 4 = ลอง 4 ชุดแรก ชุดละ 2 รอบ ไม่ใช่พารามิเตอร์ 4 ตัว',wraplength=370).pack(anchor='w',pady=5)
         self.action_button(t,text='ดูชุดค่าที่เตรียมไว้',command=self.show_candidates).pack(fill='x',pady=3)
-        ttk.Label(t,text='ทดลองให้ครบจำนวนชุดที่เลือก แล้วประเมินชุดที่เลือกด้วย seed ใหม่',wraplength=370).pack(anchor='w',pady=6)
+        ttk.Label(t,text='ทดลองชุดค่าที่เตรียมไว้ทั้งหมด แล้วประเมินชุดที่ดีที่สุดด้วย seed ใหม่',wraplength=370).pack(anchor='w',pady=6)
         self.train_button=self.action_button(t,text='สร้าง Knowledge',command=self.build_knowledge)
         self.train_button.pack(fill='x',ipady=8,pady=4)
         self.progress=ttk.Progressbar(t,mode='indeterminate'); self.progress.pack(fill='x',pady=6)
@@ -189,6 +192,22 @@ class App:
         self.export_button.pack(fill='x',ipady=8,pady=8)
         self.action_button(t,text='ล้างผลซิม / เส้นทาง',command=self.clear_trace).pack(fill='x',pady=3)
         ttk.Label(t,text='หลังส่งออกจะล็อก session\nเปลี่ยนสนาม/ภารกิจเพื่อเริ่มใหม่\nส่งออกโหมดจำลองใช้สั่งหุ่นจริงไม่ได้',wraplength=370).pack(anchor='w',pady=8)
+        ttk.Separator(t).pack(fill='x',pady=6)
+        ttk.Label(t,text='ส่งต่อไป Program 2 · หลังบันทึก Knowledge').pack(anchor='w',pady=4)
+        self.stop_localization_button=self.action_button(t,text='หยุด Localization ก่อนเปิด Program 2',command=self.stop_localization)
+        self.stop_localization_button.pack(fill='x',pady=3)
+        ttk.Label(t,text='ให้หุ่นอยู่นิ่งหลังส่งออก แล้วหยุด Localization ก่อนเริ่มเดินจริง',wraplength=370).pack(anchor='w',pady=4)
+        m=scrollable(self.slam_tab)
+        ttk.Label(m,text='1. เริ่ม SLAM แล้วขับหุ่นสำรวจ').pack(anchor='w',pady=4)
+        ttk.Label(m,text='เปิด bringup บนหุ่นไว้ · ใช้ Burger\nเปิด Cartographer และ Teleop คนละ terminal\nคลิก terminal Teleop เพื่อใช้แป้นพิมพ์ขับหุ่น',wraplength=370).pack(anchor='w',pady=6)
+        self.slam_button=self.action_button(m,text='เริ่ม SLAM · เปิด 2 terminals',command=self.start_slam)
+        self.slam_button.pack(fill='x',ipady=5,pady=4)
+        ttk.Label(m,text='2. หยุดขับ แล้วบันทึกแผนที่').pack(anchor='w',pady=6)
+        self.save_map_button=self.action_button(m,text='Save map · เลือกชื่อและ path',command=self.save_slam_map)
+        self.save_map_button.pack(fill='x',ipady=5,pady=4)
+        self.action_button(m,text='หยุด SLAM / Teleop โดยไม่บันทึก',command=self.stop_slam).pack(fill='x',pady=4)
+        ttk.Label(m,text='บันทึกสำเร็จแล้วจะปิดทั้ง 2 terminals และโหลดแผนที่ให้\nหากบันทึกล้มเหลว SLAM จะยังเปิดไว้ให้ลองใหม่',wraplength=370).pack(anchor='w',pady=6)
+        ttk.Label(m,textvariable=self.slam_status,wraplength=370).pack(anchor='w',pady=6)
         right.columnconfigure(0,weight=1)
         right.rowconfigure(0,weight=1)
         self.canvas=tk.Canvas(right,bg='#142230',highlightthickness=0)
@@ -247,6 +266,7 @@ class App:
             elif self.status.get()==f'กำลังดำเนินการ: {label}':self.status.set('ดำเนินการเรียบร้อย')
             if self.action_failed or result is False:outcome='ไม่ผ่าน'
             elif result=='cancelled':outcome='ยกเลิก'
+            elif result=='warning':outcome='คำเตือน'
             elif self.busy:outcome='กำลังทำงาน'
             else:outcome='ผ่าน'
             self.action_feedback.set(f'{outcome}: {label}')
@@ -266,10 +286,12 @@ class App:
 
     def hardware_text(self):
         h=self.hardware
-        return f'รัศมีหุ่น {h.radius:.3f} m + ระยะเผื่อ {h.safety_margin:.3f} m\nระยะถึง Goal {h.goal_tolerance:.2f} m · จำกัด {h.max_speed:.2f} m/s\nค่าเริ่มต้น Burger / LDS-02 · ต้องวัดอุปกรณ์เสริมและสอบเทียบการเบรกจริง'
+        return f'รัศมีวงครอบหุ่น {h.radius:.3f} m + ระยะเผื่อ {h.safety_margin:.3f} m\nรัศมีรวมที่ใช้ตรวจ {h.safe_radius:.3f} m\nระยะถึง Goal {h.goal_tolerance:.2f} m · จำกัด {h.max_speed:.2f} m/s\nค่าเริ่มต้น Burger / LDS-02 · ต้องวัดอุปกรณ์เสริมและสอบเทียบการเบรกจริง'
 
     def sync(self):
         enabled=not self.busy
+        self.slam_button['state']='normal' if enabled and self.slam_session is None else 'disabled'
+        self.save_map_button['state']='normal' if enabled and self.slam_session is not None else 'disabled'
         self.start_mode_button['state']='normal' if enabled and self.simulation_mode.get() else 'disabled'
         for entry in self.start_entries:entry['state']='disabled' if not enabled else 'normal' if self.simulation_mode.get() else 'readonly'
         self.map_button['state']='normal' if enabled else 'disabled'
@@ -321,8 +343,12 @@ class App:
         self.invalidate()
         self.write_arena(arena)
         self.map_info.set(f'{Path(path).name} · {slam.width} × {slam.height} px · {slam.resolution:g} m/pixel\n{message}')
-        self.suggest_mission()
-        self.status.set(message+' · ตรวจกรอบสีเขียวบนภาพก่อนเลือกภารกิจ')
+        try:
+            self.suggest_mission()
+            self.status.set(message+' · ตรวจกรอบสีเขียวบนภาพก่อนเลือกภารกิจ')
+        except ValueError as exc:
+            self.set_mission_feedback('invalid',f'ยังแนะนำ Start–Goal อัตโนมัติไม่ได้: {exc}')
+            self.status.set(message+' · เลือก Start–Goal เอง แล้วตรวจระยะจากขอบหุ่นและความถูกต้องของแมพ')
         self.draw();self.sync()
 
     def detect_boundary(self):
@@ -424,7 +450,7 @@ class App:
         r=self.hardware.safe_radius
         if not self.world.free(start.x,start.y,r):raise ValueError('Start อยู่ในกำแพง/unknown หรือชิดสิ่งกีดขวางเกินไป')
         if not self.world.free(*goal,r):raise ValueError('Goal วางหุ่นไม่ได้ ตรวจจุดและระยะเผื่อ')
-        if not self.world.reachable(start,goal,r):raise ValueError('Start–Goal ไม่มีทางเชื่อมที่ตัวหุ่นผ่านได้')
+        self.route_verified=self.world.reachable(start,goal,r)
         return start,goal
 
     def apply_mission(self):
@@ -433,8 +459,13 @@ class App:
             if not self.simulation_mode.get() and self.captured_start is None:
                 raise ValueError('ต้อง Localize และรับ Start จาก ROS ก่อนตรวจภารกิจจริง')
             self.validate_mission();self.invalidate(keep_reference=True);self.draw()
-            self.set_mission_feedback('valid','ผ่าน: Start และ Goal วางหุ่นได้ และมีทางเชื่อมที่ตัวหุ่นผ่านได้\nพร้อมสร้าง Knowledge ในแท็บ 2')
-            self.status.set('ตรวจ Start–Goal ผ่านแล้ว ไปแท็บ 2 เพื่อสร้าง knowledge')
+            if self.route_verified:
+                self.set_mission_feedback('valid','ผ่าน: Start และ Goal วางหุ่นได้ และพบทางเชื่อมตามวงตรวจ\nพร้อมสร้าง Knowledge ในแท็บ 2')
+                self.status.set('ตรวจ Start–Goal ผ่านแล้ว ไปแท็บ 2 เพื่อสร้าง knowledge')
+            else:
+                self.set_mission_feedback('pending','Start และ Goal วางหุ่นได้ · กริดยังยืนยันทางเชื่อมตามวงตรวจไม่ได้\nอนุญาตให้สร้าง Knowledge และทดลองซิมต่อ โดยไม่ลดระยะเผื่อ')
+                self.status.set('ผลค้นหาทางเป็นคำเตือน · ไปแท็บ 2 ทดลองในซิมได้ ยังไม่ยืนยันว่าจะถึง Goal')
+                return 'warning'
         except Exception as exc:
             self.set_mission_feedback('invalid',f'ไม่ผ่าน: {exc}')
             self.error(exc)
@@ -547,7 +578,8 @@ class App:
         fields={}
         for key in ('radius','safety_margin','max_speed','max_angular_speed','braking','goal_tolerance'):
             row=ttk.Frame(window,padding=6);row.pack(fill='x')
-            ttk.Label(row,text=key,width=22).pack(side='left')
+            label={'radius':'รัศมีวงครอบหุ่น [m]','safety_margin':'ระยะเผื่อจากวงครอบ [m]'}.get(key,key)
+            ttk.Label(row,text=label,width=22).pack(side='left')
             var=tk.StringVar(value=str(getattr(self.hardware,key)));fields[key]=var
             ttk.Entry(row,textvariable=var,width=12,font=('DejaVu Sans',-15)).pack(side='right')
         def apply():
@@ -563,8 +595,6 @@ class App:
         if self.busy or self.frozen:return
         try:
             start,goal=self.validate_mission()
-            candidates=int(self.candidates.get())
-            if not 1<=candidates<=len(policy_candidates()):raise ValueError('ใช้ 1–8 ชุดค่า')
             if not self.simulation_mode.get():
                 if self.reference.mode!='localized' or self.captured_start is None:
                     raise ValueError('รับตำแหน่งจาก localization ก่อน หรือเลือกโหมดจำลอง')
@@ -578,7 +608,7 @@ class App:
         context=self.context_fingerprint(start,goal)
         def worker():
             try:
-                policy,report=train(world,arena,start,goal,hardware,candidate_limit=candidates,
+                policy,report=train(world,arena,start,goal,hardware,candidate_limit=8,
                     progress=lambda text:self.worker_messages.put(('progress',str(text))))
                 self.worker_messages.put(('trained',(policy,report,context)))
             except Exception as exc:self.worker_messages.put(('error',str(exc)))
@@ -645,13 +675,27 @@ class App:
                 self.busy=False;self.progress.stop();self.progress.configure(mode='determinate',value=0 if kind=='error' else 100)
                 if kind=='error':
                     self.status.set(data)
+                    if self.active_operation in ('slam','map_save'):self.slam_status.set('ไม่สำเร็จ: '+data)
                     if self.active_operation=='preview':
                         self.simulation_outcome.set('จำลองไม่สำเร็จ')
                         self.outcome_label.configure(foreground='#b3261e')
+                elif kind=='slam_started':
+                    self.slam_session=data
+                    self.slam_status.set('SLAM และ Teleop เปิดแล้ว · ขับสำรวจใน terminal Teleop')
+                    self.status.set(self.slam_status.get())
+                elif kind=='map_saved':
+                    self.slam_session=None
+                    self.slam_status.set(f'บันทึกแล้ว: {data} · ปิด SLAM / Teleop แล้ว')
+                    try:
+                        self.load_map(data)
+                        self.tabs.select(self.setup_tab)
+                        self.status.set(self.slam_status.get())
+                    except Exception as exc:self.error(exc)
                 elif kind=='trained':
                     self.policy,self.report,self.trained_context=data
                     self.summary.set(self.report_text(data[1]))
-                    self.status.set('สร้าง knowledge แล้ว เลือกจำลองก่อนส่งออกได้')
+                    self.status.set('สร้าง knowledge แล้ว เลือกจำลองก่อนส่งออกได้' if self.report['evaluation_successes'] else
+                        'ทดลองครบแล้ว แต่การประเมินแยกยังไม่ถึง Goal · ตรวจผลซิมและช่องทางก่อนนำไปเดินจริง')
                 elif kind=='preview':
                     result,context,use_knowledge=data
                     try:current_context=None if self.arena_fields_dirty else self.context_fingerprint(*self.mission())
@@ -664,7 +708,8 @@ class App:
                         self.refresh_results();self.draw()
                         self.status.set('จำลองเสร็จ: ดูเวลาและระยะทางใต้แผนที่ · ไม่ส่งคำสั่งหุ่น')
                 failed=kind=='error' or kind=='preview' and (self.preview_result is None or self.preview_result.get('status')!='success')
-                self.action_feedback.set(('ไม่ผ่าน: ' if failed else 'ผ่าน: ')+('สร้าง Knowledge' if self.active_operation=='training' else 'จำลอง'))
+                operation={'training':'สร้าง Knowledge','preview':'จำลอง','slam':'เริ่ม SLAM','map_save':'บันทึกแผนที่'}.get(self.active_operation,'ดำเนินการ')
+                self.action_feedback.set(('ไม่ผ่าน: ' if failed or self.action_failed else 'ผ่าน: ')+operation)
                 self.active_operation=None
                 self.sync()
         except queue.Empty:pass
@@ -721,12 +766,15 @@ class App:
         self.root.after(100,self.poll)
 
     def report_text(self,report):
-        return (f"เลือกชุด #{report.get('selected_index',0)+1} · ฝึกสำเร็จ {report.get('successes',0)}/{report.get('cases',0)} · ชน {report.get('collisions',0)}\n"
+        warning='คำเตือน: การประเมินแยกยังไม่ถึง Goal\n' if not report.get('evaluation_successes') else ''
+        return warning+(f"เลือกชุด #{report.get('selected_index',0)+1} · ฝึกสำเร็จ {report.get('successes',0)}/{report.get('cases',0)} · ชน {report.get('collisions',0)}\n"
                 f"ประเมินแยก: {report.get('evaluation_successes',0)}/{report.get('evaluation_cases',0)}\n"
                 f"ค่าเริ่มต้น: {report.get('baseline_successes',0)}/{report.get('baseline_cases',0)}\n"
                 f"ทดลองครบ {report.get('evaluated_candidates',0)} ชุด")
 
     def start_localization(self):
+        if self.slam_session is not None:
+            raise ValueError('บันทึกหรือหยุด SLAM / Teleop ก่อนเปิด Localization')
         if self.busy or self.slam is None:self.status.set('ต้องโหลดแมพและรอการคำนวณจบก่อน');return False
         if self.simulation_mode.get():self.status.set('โหมดจำลอง ไม่ต้องเปิด AMCL');return False
         try:
@@ -770,7 +818,9 @@ class App:
             self.ensure_setup_monitor()
             pose,reference=self.monitor.capture(self.arena,self.robot_id.get().strip())
             self.invalidate();self.reference=reference;self.captured_start=pose;self.set_pose(pose);self.validate_mission();self.draw()
-            self.set_mission_feedback('valid','ผ่าน: รับ Start จากหุ่นแล้ว จุด Start–Goal วางหุ่นได้และมีทางเชื่อม')
+            self.set_mission_feedback('valid' if self.route_verified else 'pending',
+                'รับ Start จากหุ่นแล้ว · Start–Goal วางหุ่นได้ · '+
+                ('พบทางเชื่อมตามวงตรวจ' if self.route_verified else 'กริดยังยืนยันทางไม่ได้ แต่ทดลองสร้าง Knowledge ในซิมต่อได้'))
             self.status.set('รับ Start และ odometry แล้ว ไปสร้าง knowledge; จะ capture ซ้ำก่อนส่งออก')
         except Exception as exc:self.error(exc)
 
@@ -831,9 +881,53 @@ class App:
         self.localization_status.set('หยุด localization ที่โปรแกรมนี้เปิดแล้ว')
         self.status.set('หุ่นต้องอยู่นิ่งและ odometry ไม่ reset ระหว่างส่งต่อ; หากเปิด AMCL เองให้ปิดด้วย')
 
+    def start_slam(self):
+        if self.slam_session is not None:raise ValueError('SLAM เปิดอยู่แล้ว บันทึกหรือหยุดชุดเดิมก่อน')
+        if self.localization is not None or self.monitor is not None:
+            raise ValueError('หยุด Localization ในหน้า ฝึก / ส่งออก ก่อนเริ่ม SLAM')
+        from core.slam import SlamSession
+        self.busy=True;self.active_operation='slam';self.sync()
+        def worker():
+            try:
+                self.slam_session=SlamSession().start()
+                self.worker_messages.put(('slam_started',self.slam_session))
+            except Exception as exc:self.worker_messages.put(('error',str(exc)))
+        self.slam_worker=threading.Thread(target=worker)
+        self.slam_worker.start()
+
+    def save_slam_map(self):
+        if self.slam_session is None:raise ValueError('เริ่ม SLAM ก่อนบันทึกแผนที่')
+        path=filedialog.asksaveasfilename(parent=self.root,title='บันทึก SLAM map',
+            initialdir=str(Path(__file__).resolve().parent.parent),initialfile='arena.yaml',
+            defaultextension='.yaml',filetypes=[('Map YAML','*.yaml')])
+        if not path:return 'cancelled'
+        prefix=Path(path).with_suffix('') if Path(path).suffix.lower() in ('.yaml','.yml','.pgm') else Path(path)
+        if any(prefix.with_name(prefix.name+suffix).exists() for suffix in ('.pgm','.png')):
+            if not messagebox.askyesno('เขียนทับแผนที่','มีไฟล์ภาพแผนที่ชื่อนี้อยู่แล้ว ต้องการเขียนทับหรือไม่?',parent=self.root):return 'cancelled'
+        from core.slam import save_map
+        session=self.slam_session
+        self.busy=True;self.active_operation='map_save';self.sync()
+        self.slam_status.set('กำลังบันทึกแผนที่ · รอให้เสร็จก่อนปิด SLAM')
+        def worker():
+            try:
+                output=save_map(path)
+                session.terminate()
+                self.worker_messages.put(('map_saved',output))
+            except Exception as exc:self.worker_messages.put(('error',str(exc)))
+        self.slam_worker=threading.Thread(target=worker)
+        self.slam_worker.start()
+
+    def stop_slam(self):
+        if self.slam_session is not None:self.slam_session.terminate()
+        self.slam_session=None
+        self.slam_status.set('หยุด SLAM / Teleop แล้ว')
+
     def close(self):
+        if self.busy and self.active_operation in ('slam','map_save'):
+            self.status.set('รอเริ่ม SLAM หรือบันทึกแผนที่เสร็จก่อนปิดโปรแกรม');return
         if self.busy and not messagebox.askyesno('กำลังคำนวณ','ออกและยกเลิกผลที่ยังไม่เสร็จ?',parent=self.root):return
         self.stop_localization()
+        self.stop_slam()
         self.root.destroy()
 
 
@@ -847,7 +941,10 @@ def main():
     try:
         root.mainloop()
     finally:
-        try:app.stop_localization()
+        try:
+            if app.slam_worker is not None:app.slam_worker.join()
+            app.stop_localization()
+            app.stop_slam()
         finally:
             try:root.destroy()
             except tk.TclError:pass

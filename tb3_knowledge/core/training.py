@@ -1,9 +1,10 @@
-"""Small reproducible policy search; evaluation never influences selection."""
+"""Choose a fixed base, learn four RL weights, and evaluate the unchanged greedy policy."""
 from dataclasses import asdict, replace
 import time
 
 from .model import Hardware, Policy
 from .simulation import run_episode
+from .reinforce import WEIGHT_KEYS,learn_weights
 
 
 def policy_candidates():
@@ -33,32 +34,57 @@ def _score(episodes):
 
 def train(world, arena, start, goal, hardware: Hardware,
           candidate_limit=4, progress=None):
-    """Return (selected Policy, report), with train and held-out noise seeds.
+    """Return the legacy Policy/report pair, with held-out final evaluation.
 
-    The disclosed Start/Goal stays fixed. Complete every selected candidate,
-    and always perform independent evaluation afterwards.
+    Compare bases on the selected Start-to-Goal mission with identical initial weights.
+    Learn only four weights; checkpoint selection uses the runtime's greedy
+    Navigator. Final evaluation seeds never select a base or checkpoint.
     Progress receives a human-readable string. Reports may retain trial scores;
     Knowledge exports must keep only the schema's aggregate scalar allowlist.
     """
     if not isinstance(candidate_limit, int) or not 1 <= candidate_limit <= len(policy_candidates()):
         raise ValueError("Candidate limit must be 1..8")
-    if not world.reachable(start, goal, hardware.safe_radius):
-        raise ValueError("Start and Goal are not connected with robot clearance")
+    if not world.free(start.x,start.y,hardware.safe_radius) or not world.free(*goal,hardware.safe_radius):
+        raise ValueError("Start or Goal footprint is blocked")
     notify = progress or (lambda message: None)
+    if not world.reachable(start,goal,hardware.safe_radius):
+        notify('คำเตือน: กริดยังยืนยันทางเชื่อมตามวงตรวจไม่ได้ · ทดลองในซิมโดยคงระยะเผื่อเดิม')
     began = time.monotonic()
     trials = []
     training_seeds = (1701, 1702)
     evaluation_seeds = (9101, 9102)
-    candidates = policy_candidates()[:candidate_limit]
+    common={key:getattr(Policy(),key) for key in WEIGHT_KEYS}
+    candidates=[replace(candidate,**common) for candidate in policy_candidates()[:candidate_limit]]
     best_score, selected, selected_index, selected_episodes = None, candidates[0], 0, []
     for index, candidate in enumerate(candidates):
-        notify(f"ทดลองพารามิเตอร์ {index + 1}/{len(candidates)} · 2 รอบต่อชุด")
-        episodes = [run_episode(world, arena, start, goal, candidate, hardware, seed=seed) for seed in training_seeds]
+        notify(f"ทดลองพารามิเตอร์ {index + 1}/{len(candidates)}")
+        episodes = [run_episode(world, arena, start, goal, candidate, hardware, seed=seed)
+            for seed in training_seeds]
         score = _score(episodes)
         trials.append({'index': index, 'policy': asdict(candidate), 'episodes': [_compact(e) for e in episodes]})
         if best_score is None or score < best_score:
             best_score, selected, selected_index, selected_episodes = score, candidate, index, episodes
         notify(f"ชุด {index + 1}: ถึงเป้าหมาย {sum(e['status'] == 'success' for e in episodes)}/2 · ชน {sum(e['collisions'] for e in episodes)}")
+    base=selected
+    notify(f'เลือกฐานชุด {selected_index+1} แล้ว · เริ่ม RL เฉพาะ weight 4 ตัว')
+    checkpoints,rl_report=learn_weights(world,arena,start,goal,hardware,base,notify)
+    rl_report['base_policy']=asdict(base)
+    rl_report['checkpoint_selection']=[]
+    best_score=None
+    selected_checkpoint=0
+    for index,candidate in enumerate([base,*checkpoints]):
+        # These calls deliberately use the same deterministic action selection
+        # as Program 2; exploration is confined to learn_weights above.
+        episodes=[run_episode(world,arena,start,goal,candidate,hardware,seed=seed) for seed in training_seeds]
+        score=_score(episodes)
+        rl_report['checkpoint_selection'].append(dict(index=index,policy=asdict(candidate),
+            episodes=[_compact(e) for e in episodes]))
+        if best_score is None or score<best_score:
+            best_score,selected,selected_episodes=score,candidate,episodes
+            selected_checkpoint=index
+        notify(f'ตรวจแบบ Program 2 {index+1}/{len(checkpoints)+1} · ถึง Goal {sum(e["status"]=="success" for e in episodes)}/2')
+    rl_report['selected_checkpoint']=selected_checkpoint
+    rl_report['selected_source']='base_fallback' if selected_checkpoint==0 else 'reinforce'
     training_seconds = time.monotonic() - began
     notify("ประเมินชุดที่เลือกและค่าเริ่มต้นด้วย seed ใหม่; ไม่ใช้ผลนี้เลือกพารามิเตอร์")
     evaluation = [run_episode(world, arena, start, goal, selected, hardware, seed=seed) for seed in evaluation_seeds]
@@ -80,6 +106,7 @@ def train(world, arena, start, goal, hardware: Hardware,
         'trials': trials, 'evaluation': [_compact(e) for e in evaluation],
         'baseline': [_compact(e) for e in baseline], 'total_seconds': round(time.monotonic() - began, 3),
         'evaluation_seeds': list(evaluation_seeds), 'training_seeds': list(training_seeds),
+        'rl':rl_report,
     }
     notify(f"เสร็จ: ชุด {selected_index + 1} · ทดสอบอิสระ {report['evaluation_successes']}/{len(evaluation)}")
     return selected, report

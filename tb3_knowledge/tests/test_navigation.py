@@ -95,6 +95,18 @@ class NavigationTests(TestCase):
             self.assertEqual(nav.command(replace(obs,scan_coverage_percent=score),0.),(0.,0.))
             self.assertEqual(nav.reason,reason)
 
+    def test_in_motion_coverage_80_percent_survives_a_pause_but_not_a_new_run(self):
+        nav,obs=self.navigator()
+        self.assertEqual(nav.command(replace(obs,scan_coverage_percent=85.),0.),(0.,0.))
+        nav.min_scan_coverage_percent=80.
+        self.assertGreater(nav.command(replace(obs,scan_coverage_percent=80.),0.)[0],0.)
+        nav.pause()
+        self.assertGreater(nav.command(replace(obs,scan_coverage_percent=80.),.05)[0],0.)
+        self.assertEqual(nav.command(replace(obs,scan_coverage_percent=79.9),.1),(0.,0.))
+        self.assertEqual(nav.reason,'insufficient_scan_coverage')
+        fresh,_=self.navigator()
+        self.assertEqual(fresh.min_scan_coverage_percent,90.)
+
     def test_history_spacing_can_only_increase_obstacle_inflation(self):
         nav,observation=self.navigator()
         nav.command(replace(observation,beam_spacing=.01),0.)
@@ -257,7 +269,8 @@ class NavigationTests(TestCase):
             return {'status': 'success' if success else 'timeout', 'time': 10.,
                 'distance': 1., 'collisions': 0, 'goal_error': .05 if success else .5,
                 'recoveries': 0, 'seed': seed, 'noise': True}
-        with patch('tb3_knowledge.core.training.run_episode', side_effect=fake_episode):
+        with patch('tb3_knowledge.core.training.run_episode', side_effect=fake_episode), \
+                patch('tb3_knowledge.core.training.learn_weights',return_value=([],{})):
             selected, report = train(AnalyticWorld(), self.arena, Pose(.4, .4), (1.6, 1.5),
                 self.hardware, candidate_limit=2)
         self.assertEqual(selected.preferred_side, 1)
@@ -265,7 +278,29 @@ class NavigationTests(TestCase):
         self.assertEqual(report['successes'], 2)
         self.assertEqual(report['evaluation_successes'], 0)
         self.assertEqual([seed for seed, _ in seeds[:4]], [1701, 1702, 1701, 1702])
-        self.assertTrue(all(seed >= 9000 for seed, _ in seeds[4:]))
+        self.assertEqual([seed for seed,_ in seeds[4:6]],[1701,1702])
+        self.assertTrue(all(seed >= 9000 for seed, _ in seeds[6:]))
+
+    def test_unconfirmed_grid_path_warns_and_keeps_real_episode_failures(self):
+        world=AnalyticWorld()
+        notices=[]
+        failed=dict(status='recovery_exhausted',time=90.,distance=.3,collisions=0,goal_error=.8,
+                    recoveries=5,seed=1701,noise=True)
+        with patch.object(world,'reachable',return_value=False), \
+                patch('tb3_knowledge.core.training.learn_weights',return_value=([],{})), \
+                patch('tb3_knowledge.core.training.run_episode',return_value=failed) as episode:
+            _,report=train(world,self.arena,Pose(.4,.4),(1.6,1.5),self.hardware,candidate_limit=1,progress=notices.append)
+        self.assertEqual(episode.call_count,6)
+        self.assertEqual(report['successes'],0)
+        self.assertEqual(report['evaluation_successes'],0)
+        self.assertTrue(any('คำเตือน' in line for line in notices))
+        self.assertTrue(all(call.args[5].safety_margin==.03 for call in episode.call_args_list))
+
+    def test_blocked_endpoint_still_prevents_training(self):
+        with patch('tb3_knowledge.core.training.run_episode') as episode:
+            with self.assertRaisesRegex(ValueError,'footprint is blocked'):
+                train(AnalyticWorld(),self.arena,Pose(.01,.01),(1.6,1.5),self.hardware,candidate_limit=1)
+        episode.assert_not_called()
 
     def test_training_finishes_all_selected_sets_then_evaluates(self):
         clock=[0.]
@@ -275,9 +310,10 @@ class NavigationTests(TestCase):
             return {'status':'success','time':20.,'distance':1.5,'collisions':0,
                     'goal_error':.05,'recoveries':0,'seed':seed,'noise':True}
         with patch('tb3_knowledge.core.training.time.monotonic',side_effect=lambda:clock[0]),\
+             patch('tb3_knowledge.core.training.learn_weights',return_value=([],{})),\
              patch('tb3_knowledge.core.training.run_episode',side_effect=episode):
             _,report=train(AnalyticWorld(),self.arena,Pose(.4,.4),(1.6,1.5),self.hardware,candidate_limit=8)
-        self.assertEqual(seeds,[1701,1702]*8+[9101,9102])
+        self.assertEqual(seeds,[1701,1702]*9+[9101,9102])
         self.assertEqual(report['evaluated_candidates'],8)
-        self.assertEqual(report['training_seconds'],16.)
-        self.assertEqual(report['total_seconds'],18.)
+        self.assertEqual(report['training_seconds'],18.)
+        self.assertEqual(report['total_seconds'],20.)

@@ -13,6 +13,7 @@ from .model import Arena, Hardware, Policy, Pose
 from .clearance import UnknownSector,sector_distance,sector_path_clearance
 
 MIN_SCAN_COVERAGE_PERCENT = 90.0
+MOVING_SCAN_COVERAGE_PERCENT = 80.0
 
 
 def wrap(value: float) -> float:
@@ -92,6 +93,7 @@ class Navigator:
         self.candidate_count = None
         self.last_arc_clear = None
         self.last_arc_scope = 'เดินปกติ'
+        self.min_scan_coverage_percent = MIN_SCAN_COVERAGE_PERCENT
 
     @property
     def radius(self) -> float:
@@ -293,7 +295,7 @@ class Navigator:
         coverage=observation.scan_coverage_percent
         if coverage is None:
             coverage=100*sum(math.isfinite(value) and 0<value<=h.scan_range+.05 for value in observation.ranges)/len(observation.ranges)
-        if coverage<MIN_SCAN_COVERAGE_PERCENT:
+        if coverage<self.min_scan_coverage_percent:
             return self._stop('insufficient_scan_coverage')
         # Low-padding mode: once raw coverage passes, navigate from measured
         # returns. Missing rays no longer become virtual near-body obstacles.
@@ -335,6 +337,7 @@ class Navigator:
         headings = [wrap(-math.pi + i * math.pi / 18) for i in range(36)]
         headings.extend((0.0, goal_heading, wrap(self._last_heading)))
         candidates = []
+        features = []
         for heading in headings:
             clearance = self._clearance(heading, pose, points, invalid, horizon)
             # Incomplete coverage keeps the bounded scan-collection fallback.
@@ -357,6 +360,7 @@ class Navigator:
                     cost += 1.25 if self.mode == "FOLLOW" else 2.0
                 cost += 0.20 * abs(clearance - min(horizon, p.wall_distance * 2)) / horizon
             candidates.append((cost, heading, clearance))
+            features.append((goal_cost,clearance_cost,turn_cost,revisit_cost))
         self.candidate_count=len(candidates)
         if not candidates:
             advance=self._advance_for_scan(observation,now,points,invalid,dt)
@@ -366,12 +370,7 @@ class Navigator:
             # when no translational passage is currently proved. Unknown
             # sectors intersecting its actual swept circle still forbid this.
             return self._observe_for_gap(observation,now,points,invalid,dt,goal_heading)
-        candidates.sort()
-        best = candidates[0]
-        previous = min(candidates, key=lambda item: abs(wrap(item[1] - self._last_heading)))
-        if previous[0] <= best[0] + p.hysteresis:
-            best = previous
-        _, heading, clearance = best
+        _, heading, clearance = self._select_candidate(candidates,features)
         angular = _clip(2.0 * heading, -h.max_angular_speed, h.max_angular_speed)
         front_clearance = self._clearance(0.0, pose, points, invalid, horizon)
         latency = max(0, age) + h.command_timeout + h.control_period
@@ -403,3 +402,11 @@ class Navigator:
         self.reason = "navigating"
         self.local_path = [(pose.x, pose.y), (pose.x + min(clearance, horizon) * math.cos(pose.yaw + heading), pose.y + min(clearance, horizon) * math.sin(pose.yaw + heading))]
         return velocity, angular
+
+    def _select_candidate(self,candidates,features):
+        """Greedy runtime selection; only the simulator's training subclass samples."""
+        candidates.sort()
+        best=candidates[0]
+        previous=min(candidates,key=lambda item:abs(wrap(item[1]-self._last_heading)))
+        if previous[0]<=best[0]+self.policy.hysteresis:best=previous
+        return best

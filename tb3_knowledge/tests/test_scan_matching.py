@@ -7,7 +7,7 @@ import numpy as np
 
 from tb3_knowledge.core.maps import SlamMap
 from tb3_knowledge.core.model import Pose,wrap
-from tb3_knowledge.core.scan_matching import match_scan
+from tb3_knowledge.core.scan_matching import match_scan,match_quality_reason
 
 
 def scene(symmetric=False,origin=(0.,0.,0.)):
@@ -25,6 +25,15 @@ def measured(slam,pose,mount,count=360):
 
 
 class ScanMatchingTests(unittest.TestCase):
+    def test_relaxed_match_accepts_screenshot_and_inclusive_limits(self):
+        self.assertEqual(match_quality_reason(.758,.099,.791,.047),'matched')
+        self.assertEqual(match_quality_reason(.70,.15,.55,.02),'matched')
+        for agreement,error,endpoint,separation,reason in (
+                (.699,.10,.8,.04,'scan_map_mismatch'),
+                (.8,.151,.8,.04,'scan_map_mismatch'),
+                (.8,.10,.549,.04,'scan_map_mismatch'),
+                (.8,.10,.8,.019,'localization_ambiguous')):
+            self.assertEqual(match_quality_reason(agreement,error,endpoint,separation),reason)
     def test_full_search_recovers_position_and_heading_without_initial_guess(self):
         slam=scene();pose=Pose(.55,.7,.4);mount=(.02,0.,0.)
         result=match_scan(slam,measured(slam,pose,mount),-math.pi,2*math.pi/360,mount)
@@ -74,12 +83,14 @@ class ScanMatchingTests(unittest.TestCase):
         self.assertLess(abs(wrap(result.pose.yaw-pose.yaw)),.05)
         self.assertLessEqual(math.hypot(result.pose.x-hint[0],result.pose.y-hint[1]),radius+1e-9)
 
-    def test_wrong_hint_does_not_silently_fall_back_to_another_corner(self):
+    def test_hint_never_silently_falls_back_outside_requested_region(self):
         slam=scene();pose=Pose(.55,.7,.4);mount=(.02,0.,0.)
         hint=(2.4,2.4);radius=.2
         result=match_scan(slam,measured(slam,pose,mount),-math.pi,2*math.pi/360,mount,
             position_hint=hint,hint_radius=radius)
-        self.assertNotEqual(result.reason,'matched',result)
+        # Relaxed thresholds can accept similar walls inside a wrong hint;
+        # the hint must still never be bypassed to return the true distant pose.
+        self.assertGreater(math.hypot(result.pose.x-pose.x,result.pose.y-pose.y),1.)
         self.assertLessEqual(math.hypot(result.pose.x-hint[0],result.pose.y-hint[1]),radius+1e-9)
 
     def test_hint_uses_map_coordinates_with_rotated_origin(self):

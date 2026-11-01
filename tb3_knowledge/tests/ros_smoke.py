@@ -244,10 +244,13 @@ def run_ros_tests():
         scans_enabled = True
         clipped_scans = False
         old_scans = False
+        fake_speed = 0.
+        missing_beams = 0
         def sensors():
             odom = Odometry()
             odom.header.stamp, odom.header.frame_id, odom.child_frame_id = stamp(), odom_frame, base
             odom.pose.pose.orientation.w = 1.
+            odom.twist.twist.linear.x = fake_speed
             odom_pub.publish(odom)
             if not scans_enabled:
                 return
@@ -260,7 +263,7 @@ def run_ros_tests():
             scan.header.frame_id = laser
             scan.angle_min, scan.angle_max, scan.angle_increment = -math.pi, math.pi-2*math.pi/360, 2*math.pi/360
             scan.range_min, scan.range_max, scan.time_increment = .16, 8., .00025
-            scan.ranges = [1.8]*360
+            scan.ranges = [float('nan')]*missing_beams+[1.8]*(360-missing_beams)
             if clipped_scans:scan.ranges=scan.ranges[:300]
             scan_pub.publish(scan)
         timer = fake.create_timer(.025, sensors)
@@ -334,6 +337,14 @@ def run_ros_tests():
         old_scans=False
         assert pump(8, lambda: any(m.twist.linear.x > 0 for m in motor)), ('no runtime drive', status[-3:])
         assert any(s['requested'][0]>0 and s['scan_age']>=.08 for s in status),status[-3:]
+        assert status[-1]['scan_required_coverage_percent']==90.
+        fake_speed=.02
+        assert pump(2,lambda:status[-1]['scan_required_coverage_percent']==80.),status[-3:]
+        fake_speed=0.
+        missing_beams=54
+        assert pump(2,lambda:status[-1]['scan_coverage_percent']==85. and status[-1]['reason']=='navigating'),status[-3:]
+        assert status[-1]['scan_coverage_passed']
+        missing_beams=0
         assert all(0 <= m.twist.linear.x <= .080001 and abs(m.twist.angular.z) <= .800001 for m in motor)
         # One clipped sweep must not latch malformed_scan. Sustained clipped
         # sweeps must not refresh the watchdog or permit indefinite driving.
